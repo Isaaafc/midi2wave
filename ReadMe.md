@@ -10,7 +10,7 @@ Midi2Wave builds on many previous structures, it is neccessary to understand the
 
 In order, the structures to implement are:
 
-- [PixelCNN](https://arxiv.org/pdf/1601.06759.pdf)
+- [PixelCNN](https://arxiv.org/pdf/1601.06759.pdf) [Blog](http://sergeiturukin.com/2017/02/22/pixelcnn.html)
 - [Gated PixelCNN](https://papers.nips.cc/paper/6527-conditional-image-generation-with-pixelcnn-decoders.pdf)
 - [WaveNet](https://arxiv.org/pdf/1609.03499.pdf)
 - Midi2Wave
