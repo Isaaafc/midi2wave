@@ -21,3 +21,6 @@ def test_masked_conv2d_init(W):
 
 def test_residual_init():
     res = modules.ResidualBlock(3)
+
+def test_PixelCNN_is_valid():
+    pixel_cnn = modules.PixelCNN(in_channels=1, hidden_dims=64, out_channels=256, kernel_size=7, num_hidden_blocks=7)

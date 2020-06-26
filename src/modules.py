@@ -21,7 +21,7 @@ class MaskedConv2d(nn.Conv2d):
 
     def premask(self, W, mask_type):
         f_out, f_in, f_height, f_width = W.size()
-        mask = np.ones_like(W).astype('f')
+        mask = np.ones_like(W.detach().numpy()).astype('f')
         yc, xc = f_height // 2, f_width // 2
         mask[:, :, yc+1:, :] = 0.0
         mask[:, :, yc:, xc+1:] = 0.0
@@ -72,10 +72,29 @@ class ResidualBlock(nn.Module):
         return x + res
 
 class PixelCNN(nn.Module):
-    def __init__(self, in_channels, hidden_dims, block_num, out_hidden_dims, out_dims):
-        self.block = nn.Sequential(
-
+    def __init__(self, in_channels, hidden_dims, out_channels, kernel_size=7, num_hidden_blocks=7):
+        super(PixelCNN, self).__init__()
+        self.in_ = nn.Sequential(
+            MaskedConv2d('A', in_channels=in_channels, out_channels=hidden_dims, kernel_size=kernel_size, stride=1, padding=kernel_size // 2),
+            nn.BatchNorm2d(num_features=hidden_dims),
+            nn.ReLU(inplace=True)
         )
+        
+        layer = [
+            MaskedConv2d('B', in_channels=hidden_dims, out_channels=hidden_dims, kernel_size=kernel_size, stride=1, padding=kernel_size // 2),
+            nn.BatchNorm2d(num_features=hidden_dims),
+            nn.ReLU(inplace=True)
+        ]
+
+        self.block = nn.Sequential(*[l for _ in range(num_hidden_blocks) for l in layer])
+        self.out = nn.Conv2d(in_channels=hidden_dims, out_channels=out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x = self.in_(x)
+        x = self.block(x)
+        x = self.out(x)
+
+        return x
 
 class CausalConv1d(torch.nn.Conv1d):
     def __init__(
