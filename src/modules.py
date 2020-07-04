@@ -3,98 +3,125 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-"""
-Taken largely from https://github.com/rampage644/wavenet/blob/master/wavenet/models.py
-"""
-
 class MaskedConv2d(nn.Conv2d):
-    """
-    Performs masked convolution
-    """
     def __init__(self, mask_type, *args, **kwargs):
+        self.mask_type = mask_type
+        
+        assert mask_type in ['A', 'B'], "Unknown Mask Type"
+        
         super(MaskedConv2d, self).__init__(*args, **kwargs)
-        mask = self.premask(self.weight, mask_type)
-        mask = torch.from_numpy(mask).float()
+        
+        self.register_buffer('mask', self.weight.data.clone())
 
-        # Register as buffer so that the params are not updated when training
-        self.register_buffer('mask', mask)
+        _, depth, height, width = self.weight.size()
+        
+        self.mask.fill_(1)
 
-    def premask(self, W, mask_type):
-        f_out, f_in, f_height, f_width = W.size()
-        mask = np.ones_like(W.detach().numpy()).astype('f')
-        yc, xc = f_height // 2, f_width // 2
-        mask[:, :, yc+1:, :] = 0.0
-        mask[:, :, yc:, xc+1:] = 0.0
+        if mask_type =='A':
+            self.mask[:,:,height//2,width//2:] = 0
+            self.mask[:,:,height//2+1:,:] = 0
+        else:
+            self.mask[:,:,height//2,width//2+1:] = 0
+            self.mask[:,:,height//2+1:,:] = 0
 
-        for i in range(3):
-            mask[self.bmask(f_out, f_in, i, i), yc, xc] = 0.0 if mask_type == 'A' else 1.0
-
-        # G > R
-        mask[self.bmask(f_out, f_in, 0, 1), yc, xc] = 0.0
-        # B > R
-        mask[self.bmask(f_out, f_in, 0, 2), yc, xc] = 0.0
-        # B > G
-        mask[self.bmask(f_out, f_in, 1, 2), yc, xc] = 0.0
-
-        return mask
-
-    def bmask(self, c_out, c_in, i_out, i_in):
-        """
-        Same pixel masking - pixel won't access next color (conv filter dim)
-        """
-        c_out_idx = np.expand_dims(np.arange(c_out) % 3 == i_out, 1)
-        c_in_idx = np.expand_dims(np.arange(c_in) % 3 == i_in, 0)
-        a1, a2 = np.broadcast_arrays(c_out_idx, c_in_idx)
-
-        return a1 * a2
 
     def forward(self, x):
-        # Mask the weights before convolution
         self.weight.data *= self.mask
-        x = super(MaskedConv2d, self).forward(x)
-        return x
+        
+        return super(MaskedConv2d, self).forward(x)
 
 class ResidualBlock(nn.Module):
-    def __init__(self, h):
+    def __init__(self, dim, kernel):
         super(ResidualBlock, self).__init__()
-        self.block = nn.Sequential(
-            nn.ReLU(),
-            nn.Conv2d(2 * h, h, (1, 1)),
-            nn.ReLU(),
-            nn.Conv2d(h, h, (3, 3)),
-            nn.ReLU(),
-            nn.Conv2d(h, 2 * h, (1, 1))
-        )
+        self.layer_1 = PixelCNNLayer(in_channels=dim, out_channels=dim // 2, kernel=1)
+        self.layer_2 = PixelCNNLayer(in_channels=dim // 2, out_channels=dim // 2, kernel=kernel)
+        self.layer_3 = PixelCNNLayer(in_channels=dim // 2, out_channels=dim, kernel=1)
 
     def forward(self, x):
-        res = self.block(x)
+        res = self.layer_1(x)
+        res = self.layer_2(res)
+        res = self.layer_3(res)
+
         assert res.shape == x.shape
+
         return x + res
 
-class PixelCNN(nn.Module):
-    def __init__(self, in_channels, hidden_dims, out_channels, kernel_size=7, num_hidden_blocks=7):
-        super(PixelCNN, self).__init__()
-        self.in_ = nn.Sequential(
-            MaskedConv2d('A', in_channels=in_channels, out_channels=hidden_dims, kernel_size=kernel_size, stride=1, padding=kernel_size // 2),
-            nn.BatchNorm2d(num_features=hidden_dims),
-            nn.ReLU(inplace=True)
-        )
-        
-        layer = [
-            MaskedConv2d('B', in_channels=hidden_dims, out_channels=hidden_dims, kernel_size=kernel_size, stride=1, padding=kernel_size // 2),
-            nn.BatchNorm2d(num_features=hidden_dims),
-            nn.ReLU(inplace=True)
-        ]
+class PixelCNNLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel):
+        super(PixelCNNLayer, self).__init__()
 
-        self.block = nn.Sequential(*[l for _ in range(num_hidden_blocks) for l in layer])
-        self.out = nn.Conv2d(in_channels=hidden_dims, out_channels=out_channels, kernel_size=1)
+        self.conv = MaskedConv2d('B', in_channels, out_channels, kernel, 1, kernel // 2, bias=False)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(True)
 
     def forward(self, x):
-        x = self.in_(x)
-        x = self.block(x)
-        x = self.out(x)
+        x = self.conv(x)
+        x = self.batch_norm(x)
+        x = self.relu(x)
 
         return x
+
+class PixelCNN(nn.Module):
+    """
+    Network of PixelCNN as described in A Oord et. al. 
+    """
+    def __init__(self, kernel=7, channels=128, last_layer_filters=256, device=None):
+        super(PixelCNN, self).__init__()
+        self.kernel = kernel
+        self.channels = channels
+        self.layers = {}
+        self.device = device
+
+        self.Conv2d_1 = MaskedConv2d('A',in_channels=1,out_channels=channels, kernel_size=kernel, stride=1, padding=kernel//2, bias=False)
+        self.BatchNorm2d_1 = nn.BatchNorm2d(channels)
+        self.ReLU_1= nn.ReLU(True)
+
+        self.res1 = ResidualBlock(channels, kernel=3)
+        self.res2 = ResidualBlock(channels, kernel=3)
+        self.res3 = ResidualBlock(channels, kernel=3)
+        self.res4 = ResidualBlock(channels, kernel=3)
+        self.res5 = ResidualBlock(channels, kernel=3)
+        self.res6 = ResidualBlock(channels, kernel=3)
+        self.res7 = ResidualBlock(channels, kernel=3)
+        self.res8 = ResidualBlock(channels, kernel=3)
+        self.res9 = ResidualBlock(channels, kernel=3)
+        self.res10 = ResidualBlock(channels, kernel=3)
+        self.res11 = ResidualBlock(channels, kernel=3)
+        self.res12 = ResidualBlock(channels, kernel=3)
+        self.res13 = ResidualBlock(channels, kernel=3)
+        self.res14 = ResidualBlock(channels, kernel=3)
+        self.res15 = ResidualBlock(channels, kernel=3)
+
+        self.layer_2 = PixelCNNLayer(in_channels=channels, out_channels=last_layer_filters, kernel=1)
+        self.layer_3 = PixelCNNLayer(in_channels=last_layer_filters, out_channels=last_layer_filters, kernel=1)
+
+        self.out = nn.Conv2d(last_layer_filters, 256, 1)
+
+    def forward(self, x):
+        x = self.Conv2d_1(x)
+        x = self.BatchNorm2d_1(x)
+        x = self.ReLU_1(x)
+
+        x = self.res1(x)
+        x = self.res2(x)
+        x = self.res3(x)
+        x = self.res4(x)
+        x = self.res5(x)
+        x = self.res6(x)
+        x = self.res7(x)
+        x = self.res8(x)
+        x = self.res9(x)
+        x = self.res10(x)
+        x = self.res11(x)
+        x = self.res12(x)
+        x = self.res13(x)
+        x = self.res14(x)
+        x = self.res15(x)
+
+        x = self.layer_2(x)
+        x = self.layer_3(x)
+
+        return self.out(x)
 
 class CausalConv1d(torch.nn.Conv1d):
     def __init__(
