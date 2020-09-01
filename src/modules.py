@@ -4,31 +4,39 @@ import torch.nn.functional as F
 import numpy as np
 
 class MaskedConv2d(nn.Conv2d):
-    def __init__(self, mask_type, *args, **kwargs):
-        self.mask_type = mask_type
-        
-        assert mask_type in ['A', 'B'], "Unknown Mask Type"
-        
+    def __init__(self, mask_type, data_channels=1, *args, **kwargs):
         super(MaskedConv2d, self).__init__(*args, **kwargs)
-        
-        self.register_buffer('mask', self.weight.data.clone())
 
-        _, depth, height, width = self.weight.size()
-        
-        self.mask.fill_(1)
+        assert mask_type in ['A', 'B'], 'Invalid mask type.'
 
-        if mask_type =='A':
-            self.mask[:,:,height//2,width//2:] = 0
-            self.mask[:,:,height//2+1:,:] = 0
-        else:
-            self.mask[:,:,height//2,width//2+1:] = 0
-            self.mask[:,:,height//2+1:,:] = 0
+        out_channels, in_channels, height, width = self.weight.size()
+        yc, xc = height // 2, width // 2
 
+        mask = np.zeros(self.weight.size(), dtype=np.float64)
+        mask[:, :, :yc, :] = 1
+        mask[:, :, yc, :xc + 1] = 1
+
+        def cmask(out_c, in_c):
+            a = (np.arange(out_channels) % data_channels == out_c)[:, None]
+            b = (np.arange(in_channels) % data_channels == in_c)[None, :]
+            return a * b
+
+        for o in range(data_channels):
+            for i in range(o + 1, data_channels):
+                mask[cmask(o, i), yc, xc] = 0
+
+        if mask_type == 'A':
+            for c in range(data_channels):
+                mask[cmask(c, c), yc, xc] = 0
+
+        mask = torch.from_numpy(mask).double()
+
+        self.register_buffer('mask', mask)
 
     def forward(self, x):
         self.weight.data *= self.mask
-        
-        return super(MaskedConv2d, self).forward(x)
+        x = super(MaskedConv2d, self).forward(x)
+        return x
 
 class ResidualBlock(nn.Module):
     def __init__(self, dim, kernel):
@@ -50,7 +58,7 @@ class PixelCNNLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel):
         super(PixelCNNLayer, self).__init__()
 
-        self.conv = MaskedConv2d('B', in_channels, out_channels, kernel, 1, kernel // 2, bias=False)
+        self.conv = MaskedConv2d('B', in_channels=in_channels, out_channels=out_channels, kernel_size=kernel, stride=1, padding=kernel // 2, bias=False)
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(True)
 
@@ -65,14 +73,10 @@ class PixelCNN(nn.Module):
     """
     Network of PixelCNN as described in A Oord et. al. 
     """
-    def __init__(self, kernel=7, channels=128, last_layer_filters=256, device=None):
+    def __init__(self, in_channels=1, kernel=7, channels=128, last_layer_filters=256, device=None):
         super(PixelCNN, self).__init__()
-        self.kernel = kernel
-        self.channels = channels
-        self.layers = {}
-        self.device = device
 
-        self.Conv2d_1 = MaskedConv2d('A',in_channels=1,out_channels=channels, kernel_size=kernel, stride=1, padding=kernel//2, bias=False)
+        self.Conv2d_1 = MaskedConv2d('A', in_channels=in_channels, out_channels=channels, kernel_size=kernel, stride=1, padding=kernel//2, bias=False)
         self.BatchNorm2d_1 = nn.BatchNorm2d(channels)
         self.ReLU_1= nn.ReLU(True)
 
@@ -154,3 +158,16 @@ class CausalConv1d(torch.nn.Conv1d):
             return result[:, :, :-self.__padding__]
         
         return result
+
+class CroppedConv2d(nn.Conv2d):
+    def __init__(self, *args, **kwargs):
+        super(CroppedConv2d, self).__init__(*args, **kwargs)
+
+    def forward(self, x):
+        x = super(CroppedConv2d, self).forward(x)
+
+        kernel_height, _ = self.kernel_size
+        res = x[:, :, 1:-kernel_height, :]
+        shifted_up_res = x[:, :, :-kernel_height-1, :]
+
+        return res, shifted_up_res

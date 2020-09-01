@@ -61,13 +61,7 @@ def main():
 
                 running_loss = 0.0
 
-        # if (epoch + 1) % 5 == 0:
-        #     generate_pixelcnn.generate_bw(net, device=device, image_path='../output/sample_{}.png'.format(epoch + 1), batch_size=64)
-        #     net.train()
-        #     print('Sample generated at epoch {}, continuing', epoch)
-
     torch.save(net.state_dict(), '../output/model.pt')
-    # generate_pixelcnn.generate_bw(net, device=device, image_path='../output/sample.png', batch_size=64)
 
 if __name__ == '__main__':
     # For whatever reasons torch fails to run with cuda without a main() function

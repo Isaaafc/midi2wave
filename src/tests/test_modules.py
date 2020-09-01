@@ -20,7 +20,14 @@ def test_masked_conv2d_init(W):
     masked_conv2d_B = modules.MaskedConv2d('B', in_channels=3, out_channels=3, kernel_size=(1, 1))
 
 def test_residual_init():
-    res = modules.ResidualBlock(3)
+    res = modules.ResidualBlock(3, 3)
 
 def test_PixelCNN_is_valid():
-    pixel_cnn = modules.PixelCNN(in_channels=1, hidden_dims=64, out_channels=256, kernel_size=7)
+    pixel_cnn = modules.PixelCNN(in_channels=1, channels=256, kernel=7, last_layer_filters=256)
+
+def test_CroppedConv2d():
+    x = np.random.normal(size=(1, 1, 9, 9))
+    t = torch.from_numpy(x).double()
+
+    c = modules.CroppedConv2d(in_channels=1, out_channels=1, kernel_size=3).double()
+    c.forward(t)
